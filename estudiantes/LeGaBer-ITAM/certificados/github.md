@@ -1,5 +1,8 @@
 #Certificación GitHub Concepts
+
 **Estudiante:** Leonardo García 
-**Fecha:** 29 de enero del 2026
+**Fecha:** $(date +%Y-%m-%d)
+
 ##Evidencia
-![Certificado GitHub]{./evidencia_github.pdf}
+
+![Certificado GitHub](evidencia_github.pdf)
