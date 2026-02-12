@@ -181,6 +181,12 @@ Para 1, 5, 10 y 20 contenedores idle (`sleep 3600`):
 2. **Memoria por contenedor** vía `docker/podman stats` (lee `memory.current` del cgroup)
 3. **Overhead del daemon**: RSS de `dockerd` o suma de RSS de todos los `conmon`
 
+### ¿Qué es RSS?
+
+**RSS** (Resident Set Size) es la cantidad de memoria física (RAM) que un proceso tiene **actualmente cargada** en memoria. No incluye memoria swappeada ni páginas compartidas con otros procesos — es lo que el proceso realmente está ocupando en RAM en este momento.
+
+Cuando medimos "daemon RSS" estamos preguntando: ¿cuánta RAM real consume el daemon de Docker (`dockerd`) o los procesos `conmon` de Podman? Usamos el comando `ps -o rss=` que reporta RSS en kilobytes.
+
 ### ¿Por qué cgroup y no `free -m`?
 
 Imagina que quieres pesar una carta. Tienes dos opciones:
@@ -411,8 +417,10 @@ podman rm -f exp3_podman
 **Hash: ¿los contenedores son más rápidos que bare metal?**
 
 No realmente. La diferencia viene de cómo se accede a `/dev/urandom`:
-- En **bare metal**, `dd` lee `/dev/urandom` a través del VFS del kernel directamente.
+- En **bare metal**, `dd` lee `/dev/urandom` a través del **VFS** del kernel directamente.
 - En **contenedores**, la lectura pasa por la capa del namespace, que en algunos kernels tiene un path ligeramente diferente hacia el generador de números aleatorios.
+
+**¿Qué es el VFS?** VFS (Virtual File System) es la capa de abstracción del kernel de Linux que permite que todos los filesystems (ext4, overlay, procfs, `/dev/urandom`, etc.) se accedan con la misma interfaz (`open`, `read`, `write`, `close`). Cuando un programa lee un archivo, no habla directamente con el disco o el dispositivo — habla con el VFS, y el VFS despacha la operación al driver correcto. En un contenedor, el VFS pasa por capas adicionales (el overlay filesystem, el mount namespace) antes de llegar al recurso real.
 
 Los tiempos absolutos (~0.8-1.0s) son tan cortos que la diferencia está dominada por varianza del scheduler y estado del caché de CPU. El resultado correcto es: **para hash, el overhead del contenedor es ~0%** — las diferencias son ruido del sistema.
 
@@ -421,9 +429,15 @@ Los tiempos absolutos (~0.8-1.0s) son tan cortos que la diferencia está dominad
 Sort es un workload más interesante porque:
 - Aloca ~20 MB de memoria para el buffer de ordenamiento
 - Crea 3 procesos (seq, shuf, sort) conectados por pipes
-- Las syscalls (`mmap`, `read`, `write` en los pipes) pasan por la capa del namespace
+- Las **syscalls** pasan por la capa del namespace
 
-El overhead de +6-8% viene de las **syscalls pasando por capas adicionales del kernel**: cada `read()`/`write()` en los pipes y cada `mmap()` para alocar memoria pasa por la capa de namespace y cgroup. Con 1 millón de números fluyendo por 3 procesos, esos microsegundos extra por syscall se acumulan.
+**¿Qué son las syscalls?** Una **syscall** (system call) es la forma en que un programa le pide algo al kernel del sistema operativo. Los programas no pueden acceder al hardware directamente — tienen que pedírselo al kernel a través de syscalls. Cada operación fundamental es una syscall:
+
+- **`read()`** / **`write()`**: leer/escribir datos (en archivos, pipes, sockets, dispositivos). Cuando `seq` escribe números al pipe y `sort` los lee, cada transferencia es un par de syscalls `write()` + `read()`.
+- **`mmap()`**: pedir al kernel que mapee un bloque de memoria al espacio del proceso. Cuando `sort` necesita 20 MB para su buffer de ordenamiento, usa `mmap()` para pedírselo al kernel.
+- **`open()`** / **`close()`**: abrir/cerrar archivos o dispositivos.
+
+En bare metal, estas syscalls van directo al kernel. En un contenedor, cada syscall pasa por **capas adicionales**: el kernel verifica el namespace (¿este proceso tiene permiso de acceder a este recurso en su namespace?), el cgroup (¿ha excedido su límite de memoria?), y el overlay filesystem (¿en qué capa está este archivo?). Cada verificación agrega microsegundos, y con 1 millón de números fluyendo por 3 procesos conectados por pipes, esos microsegundos se acumulan hasta el +6-8% de overhead que observamos.
 
 **LAUNCH vs RUNNING — la prueba final:**
 
